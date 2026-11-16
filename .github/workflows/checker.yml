@@ -1,0 +1,80 @@
+name: VPN Key Checker Auto-Update
+
+on:
+  schedule:
+    # Запуск каждые 6 часов (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Позволяет запускать вручную кнопкой
+
+# Даем права на сохранение файлов (git push)
+permissions:
+  contents: write
+
+jobs:
+  check-keys:
+    runs-on: windows-latest
+
+    steps:
+      - name: Скачиваем код из репозитория
+        uses: actions/checkout@v4
+
+      - name: Скачиваем ключи из секрета
+        shell: pwsh
+        run: |
+          $sources = "${{ secrets.KEY_SOURCES }}".Trim() -split '\s+'
+          foreach ($url in $sources) {
+            if ($url -ne "") {
+              Write-Host "Скачиваем: $url"
+              Invoke-WebRequest -Uri $url -OutFile "temp_keys.txt"
+              Get-Content "temp_keys.txt" | Add-Content -Path "keys.txt"
+            }
+          }
+          Remove-Item "temp_keys.txt" -ErrorAction SilentlyContinue
+
+      - name: Скачиваем Xray и Sing-box
+        shell: pwsh
+        run: |
+          # Скачиваем Xray (актуальная версия)
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip" -OutFile "xray.zip"
+          Expand-Archive -Path "xray.zip" -DestinationPath "." -Force
+          
+          # Скачиваем Sing-box (версия 1.14.4)
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip" -OutFile "singbox.zip"
+          Expand-Archive -Path "singbox.zip" -DestinationPath "temp_singbox" -Force
+          
+          # Перемещаем exe из папки в корень и чистим мусор
+          Get-ChildItem -Path "temp_singbox" -Filter "sing-box.exe" -Recurse | Move-Item -Destination ".\sing-box.exe" -Force
+          
+          Remove-Item -Path "xray.zip", "singbox.zip" -Force
+          Remove-Item -Path "temp_singbox" -Recurse -Force
+
+      - name: Устанавливаем Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кэшируем Cargo (чтобы собиралось быстрее)
+        uses: Swatinem/rust-cache@v2
+
+      - name: Собираем проект
+        run: cargo build --release
+
+      - name: Запускаем чекер
+        # continue-on-error: true позволит сохранить результаты, даже если чекер упадет с ошибкой
+        continue-on-error: true
+        run: .\target\release\vpn-key-checker.exe
+
+      - name: Сохраняем результат на GitHub
+        shell: pwsh
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          # Добавляем файл (он игнорируется gitignore, поэтому используем -f)
+          git add -f alive_keys.txt
+          
+          # Проверяем, изменился ли файл, чтобы не делать пустые коммиты
+          if (git diff --staged --quiet) {
+            Write-Host "Нет новых рабочих ключей. Пропускаем коммит."
+          } else {
+            git commit -m "Auto-update alive_keys.txt [skip ci]"
+            git push
+          }
