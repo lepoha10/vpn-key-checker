@@ -12,3 +12,7 @@ alive_keys.txt
 # Игнорируем временные файлы и логи
 *.log
 *.tmp
+
+.vs/
+keys_converted.txt
+convert_ulink.py
